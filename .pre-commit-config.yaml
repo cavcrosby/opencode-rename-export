@@ -18,7 +18,9 @@ repos:
         name: prettier
         entry: prettier --write
         language: node
-        types:
+        types_or:
           - markdown
+          - yaml
+          - json
         additional_dependencies:
           - prettier@3.9.6

@@ -1,30 +1,30 @@
 {
-    "name": "@cavcrosby/opencode-rename-export",
-    "version": "1.0.1",
-    "description": "OpenCode plugin that renames OpenCode TUI session exports using a configurable filename format",
-    "type": "module",
-    "engines": {
-        "node": ">=24 <27"
-    },
-    "main": "./dist/index.js",
-    "repository": {
-        "type": "git",
-        "url": "git+https://github.com/cavcrosby/opencode-rename-export.git"
-    },
-    "files": [
-        "dist/"
-    ],
-    "scripts": {
-        "build": "tsc --declaration --outDir ./dist",
-        "test": "tsx --test ./src/plugin.test.ts",
-        "typecheck": "tsc --noEmit"
-    },
-    "dependencies": {
-        "@opencode-ai/plugin": "^1.18.29"
-    },
-    "devDependencies": {
-        "@types/node": "^24.0.0",
-        "tsx": "^4.20.0",
-        "typescript": "^5.8.0"
-    }
+  "name": "@cavcrosby/opencode-rename-export",
+  "version": "1.0.1",
+  "description": "OpenCode plugin that renames OpenCode TUI session exports using a configurable filename format",
+  "type": "module",
+  "engines": {
+    "node": ">=24 <27"
+  },
+  "main": "./dist/index.js",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/cavcrosby/opencode-rename-export.git"
+  },
+  "files": [
+    "dist/"
+  ],
+  "scripts": {
+    "build": "tsc --declaration --outDir ./dist",
+    "test": "tsx --test ./src/plugin.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@opencode-ai/plugin": "^1.18.29"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.8.0"
+  }
 }
