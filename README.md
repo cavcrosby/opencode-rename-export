@@ -1,12 +1,14 @@
 # opencode-rename-export
 
-This is a plugin for OpenCode that renames Markdown files created by OpenCode's
-TUI session `/export` command using a configurable filename format.
+This is a plugin for OpenCode that renames Markdown and JSON files created by
+OpenCode's TUI session `/export` command using a configurable filename format.
 
-The plugin listens for `file.watcher.updated` events and only handles filenames
-matching OpenCode's current default export pattern, `session-XXXXXXXX.md`.
-OpenCode's file watcher is currently an experimental feature and must be enabled
-[via an environment variable](https://opencode.ai/docs/cli/#experimental).
+Version 2.0.0 and later of this plugin only support OpenCode V2. For OpenCode
+V1, use version `1.x` of this plugin.
+
+The plugin watches the TUI's working directory, which is where OpenCode saves
+exports, and only handles filenames matching OpenCode's current default export
+pattern, `session-<uuid>.md` or `session-<uuid>.json`.
 
 ## Installation
 
@@ -16,7 +18,7 @@ Add the plugin to your OpenCode configuration file
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": ["@cavcrosby/opencode-rename-export"]
+  "plugins": ["@cavcrosby/opencode-rename-export"]
 }
 ```
 
@@ -26,36 +28,36 @@ the default specifier):
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": [
-    [
-      "@cavcrosby/opencode-rename-export",
-      {
-        "format": "{date}-{title}-{shortSessionID}.md"
+  "plugins": [
+    {
+      "package": "@cavcrosby/opencode-rename-export",
+      "options": {
+        "format": "{date}-{title}-{shortSessionID}.{ext}"
       }
-    ]
+    }
   ]
 }
 ```
 
 Supported tokens:
 
-- `{title}`: session title
+- `{title}`: session title (`untitled` if the session has none)
 - `{date}`: export date in UTC (`YYYY-MM-DD`)
 - `{time}`: export time in UTC (`HH-MM-SS`)
 - `{sessionID}`: full session ID
 - `{shortSessionID}`: first eight characters of the session ID
 - `{project}`: project directory name
+- `{ext}`: the export's extension (`md` or `json`)
+
+If the format hard-codes an extension instead of using `{ext}`, it is used for
+both Markdown and JSON exports.
 
 Token values are sanitized for use in cross-platform filenames. The renamed file
 remains in the original export directory. Existing destination files are
-overwritten.
+overwritten. A toast (a brief pop-up notification in the TUI) reports each
+rename or failure.
 
-When `VISUAL` or `EDITOR` is configured, the plugin waits for OpenCode's
-post-editor write before renaming. If the editor exits unsuccessfully, OpenCode
-does not perform that write and the file keeps its default name.
-
-The export directory must be inside OpenCode's watched project directory, and
-OpenCode's file watcher must be enabled.
+Exports saved to the system's temporary directory are not renamed.
 
 ## License
 

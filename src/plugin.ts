@@ -1,10 +1,13 @@
-import type { Plugin, PluginOptions } from "@opencode-ai/plugin";
+import type { PluginOptions } from "@opencode/plugin";
 import { lstat, rename, rm } from "node:fs/promises";
 import path from "node:path";
 
-export const DEFAULT_FORMAT = "{date}-{title}-{shortSessionID}.md";
+export const PLUGIN_ID = "cavcrosby.rename-export";
+export const DEFAULT_FORMAT = "{date}-{title}-{shortSessionID}.{ext}";
+const DEFAULT_EXPORT_PATTERN =
+  /^session-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.(md|json)$/i;
 
-const DEFAULT_EXPORT_PATTERN = /^session-([A-Za-z0-9_-]{8})\.md$/;
+const MARKDOWN_SESSION_ID_PATTERN = /^\*\*Session ID:\*\* *(\S+) *$/m;
 const FORMAT_TOKEN_PATTERN = /\{([A-Za-z][A-Za-z0-9]*)\}/g;
 const VALID_TOKENS = new Set([
   "title",
@@ -13,37 +16,40 @@ const VALID_TOKENS = new Set([
   "sessionID",
   "shortSessionID",
   "project",
+  "ext",
 ]);
 const INVALID_FILENAME_CHARACTERS = /[<>:"/\\|?*\u0000-\u001f\u007f]/;
 const RETRYABLE_RENAME_ERRORS = new Set(["EBUSY", "ENOENT", "EPERM"]);
 
-export interface RenameExportOptions extends PluginOptions {
+export type ExportExtension = "md" | "json";
+
+export interface RenameExportOptions {
   format?: string;
 }
 
 export interface SessionInfo {
   id: string;
-  title: string;
+  title?: string;
 }
 
-export interface FileWatcherEvent {
-  file: string;
-  event: "add" | "change" | "unlink";
-}
-
-interface RenamerDependencies {
+export interface RenamerDependencies {
   directory: string;
   projectName: string;
   format: string;
-  editorConfigured: boolean;
   now(): Date;
-  listSessions(): Promise<SessionInfo[]>;
+  readFile(file: string): Promise<string>;
+  getSession(sessionID: string): Promise<SessionInfo | undefined>;
   move(source: string, destination: string): Promise<void>;
-  notify(message: string, variant: "success" | "error"): Promise<void>;
+  notify(
+    message: string,
+    variant: "success" | "error",
+    sessionID?: string,
+  ): Promise<void> | void;
+  sleep?(milliseconds: number): Promise<void>;
 }
 
-function sanitizeToken(value: string, fallback: string) {
-  const sanitized = value
+function sanitizeToken(value: string | undefined, fallback: string) {
+  const sanitized = (value ?? "")
     .replace(/[<>:"/\\|?*\u0000-\u001f\u007f]/g, "-")
     .replace(/\s+/g, "-")
     .replace(/-+/g, "-")
@@ -52,9 +58,35 @@ function sanitizeToken(value: string, fallback: string) {
   return sanitized || fallback;
 }
 
+export function matchExportFilename(
+  filename: string,
+): ExportExtension | undefined {
+  const match = DEFAULT_EXPORT_PATTERN.exec(filename);
+  return match ? (match[1].toLowerCase() as ExportExtension) : undefined;
+}
+
+export function extractSessionID(content: string, extension: ExportExtension) {
+  if (extension === "md") {
+    return MARKDOWN_SESSION_ID_PATTERN.exec(content)?.[1];
+  }
+
+  try {
+    const id = JSON.parse(content)?.info?.id;
+    return typeof id === "string" && id ? id : undefined;
+  } catch {
+    // The export may still be in the middle of being written.
+    return undefined;
+  }
+}
+
 export function renderFilename(
   format: string,
-  input: { session: SessionInfo; projectName: string; date: Date },
+  input: {
+    session: SessionInfo;
+    projectName: string;
+    date: Date;
+    extension: ExportExtension;
+  },
 ) {
   const iso = input.date.toISOString();
   const values: Record<string, string> = {
@@ -64,6 +96,7 @@ export function renderFilename(
     sessionID: sanitizeToken(input.session.id, "session"),
     shortSessionID: sanitizeToken(input.session.id.slice(0, 8), "session"),
     project: sanitizeToken(input.projectName, "project"),
+    ext: input.extension,
   };
 
   const filename = format.replace(
@@ -100,86 +133,101 @@ export function renderFilename(
 }
 
 export class ExportRenamer {
-  private readonly pendingEditorWrites = new Set<string>();
   private readonly inFlight = new Set<string>();
 
   constructor(private readonly dependencies: RenamerDependencies) {}
 
-  private async notify(message: string, variant: "success" | "error") {
+  private async notify(
+    message: string,
+    variant: "success" | "error",
+    sessionID?: string,
+  ) {
     try {
-      await this.dependencies.notify(message, variant);
+      await this.dependencies.notify(message, variant, sessionID);
     } catch {
-      // Renaming must not be reported as failed merely because no TUI is connected.
+      // Renaming must not be reported as failed merely because a toast failed.
     }
   }
 
-  private async rename(source: string, shortSessionID: string) {
-    const matches = (await this.dependencies.listSessions()).filter(
-      (session) => session.id.slice(0, 8) === shortSessionID,
-    );
-
-    if (matches.length === 0) {
-      throw new Error(`session '${shortSessionID}' was not found`);
-    }
-
-    if (matches.length > 1) {
-      throw new Error(`session prefix '${shortSessionID}' is ambiguous`);
-    }
-
-    const filename = renderFilename(this.dependencies.format, {
-      session: matches[0],
-      projectName: this.dependencies.projectName,
-      date: this.dependencies.now(),
-    });
-
-    const destination = path.join(path.dirname(source), filename);
-    if (destination === source) {
-      return;
-    }
-
-    await this.dependencies.move(source, destination);
-    return destination;
+  private sleep(milliseconds: number) {
+    return this.dependencies.sleep
+      ? this.dependencies.sleep(milliseconds)
+      : new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
   }
 
-  async handle(event: FileWatcherEvent) {
-    if (event.event === "unlink") {
-      return;
+  private async readSessionID(source: string, extension: ExportExtension) {
+    for (let attempt = 0; attempt < 5; attempt++) {
+      if (attempt > 0) {
+        await this.sleep(50 * attempt);
+      }
+
+      let content: string;
+      try {
+        content = await this.dependencies.readFile(source);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+          return null;
+        }
+
+        throw error;
+      }
+
+      const sessionID = extractSessionID(content, extension);
+      if (sessionID) {
+        return sessionID;
+      }
     }
 
-    const source = path.resolve(this.dependencies.directory, event.file);
-    const match = DEFAULT_EXPORT_PATTERN.exec(path.basename(source));
-    if (!match) {
-      return;
-    }
+    throw new Error("could not read the session ID from the export");
+  }
 
-    if (this.dependencies.editorConfigured && event.event === "add") {
-      this.pendingEditorWrites.add(source);
-      return;
-    }
-
-    if (
-      this.dependencies.editorConfigured &&
-      !this.pendingEditorWrites.delete(source)
-    ) {
-      return;
-    }
-
-    if (this.inFlight.has(source)) {
+  async handle(file: string) {
+    const source = path.resolve(this.dependencies.directory, file);
+    const extension = matchExportFilename(path.basename(source));
+    if (!extension || this.inFlight.has(source)) {
       return;
     }
 
     this.inFlight.add(source);
+    let sessionID: string | undefined;
     try {
-      const destination = await this.rename(source, match[1]);
-      if (destination) {
-        await this.notify(
-          `Session export renamed to ${path.basename(destination)}`,
-          "success",
-        );
+      const id = await this.readSessionID(source, extension);
+      if (id === null) {
+        // Already renamed or removed; nothing left to do.
+        return;
       }
+
+      sessionID = id;
+      const session = await this.dependencies.getSession(sessionID);
+      if (!session) {
+        throw new Error(`session '${sessionID}' was not found`);
+      }
+
+      const filename = renderFilename(this.dependencies.format, {
+        session,
+        projectName: this.dependencies.projectName,
+        date: this.dependencies.now(),
+        extension,
+      });
+
+      const destination = path.join(path.dirname(source), filename);
+      if (destination === source) {
+        return;
+      }
+
+      await this.dependencies.move(source, destination);
+      await this.notify(
+        `Session export renamed to ${filename}`,
+        "success",
+        sessionID,
+      );
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      await this.notify(`Failed to rename session export: ${message}`, "error");
+      await this.notify(
+        `Failed to rename session export: ${message}`,
+        "error",
+        sessionID,
+      );
     } finally {
       this.inFlight.delete(source);
     }
@@ -254,41 +302,3 @@ export function readConfig(
 
   return { format };
 }
-
-export const RenameExportPlugin: Plugin = async (
-  { client, directory, project },
-  options,
-) => {
-  const config = readConfig(options);
-  const renamer = new ExportRenamer({
-    directory,
-    projectName: path.basename(project.worktree) || "project",
-    format: config.format,
-    editorConfigured: Boolean(process.env.VISUAL || process.env.EDITOR),
-    now: () => new Date(),
-    async listSessions() {
-      const result = await client.session.list({
-        query: { directory },
-        throwOnError: true,
-      });
-      return result.data;
-    },
-    move: moveWithOverwrite,
-    async notify(message, variant) {
-      await client.tui.showToast({
-        body: { message, variant },
-        query: { directory },
-      });
-    },
-  });
-
-  return {
-    event: async ({ event }) => {
-      if (event.type !== "file.watcher.updated") {
-        return;
-      }
-
-      await renamer.handle(event.properties);
-    },
-  };
-};

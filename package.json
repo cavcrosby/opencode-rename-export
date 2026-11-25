@@ -1,12 +1,21 @@
 {
   "name": "@cavcrosby/opencode-rename-export",
-  "version": "1.0.1",
+  "version": "2.0.0",
   "description": "OpenCode plugin that renames OpenCode TUI session exports using a configurable filename format",
   "type": "module",
   "engines": {
     "node": ">=24 <27"
   },
-  "main": "./dist/index.js",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./tui": {
+      "types": "./dist/tui.d.ts",
+      "import": "./dist/tui.js"
+    }
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/cavcrosby/opencode-rename-export.git"
@@ -20,7 +29,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@opencode-ai/plugin": "^1.18.29"
+    "@opencode/plugin": "^2.4.1"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
